@@ -1,0 +1,153 @@
+<script>
+const Logic = {
+  HEADER_PREFIX: 'GAS-TRANSCRIBE v1 audioFileId=',
+
+  transcriptFileName(audioName) {
+    return audioName + '.transcript.txt';
+  },
+
+  buildTranscript(audioFileId, text) {
+    return Logic.HEADER_PREFIX + audioFileId + '\n\n' + text;
+  },
+
+  parseTranscript(content) {
+    const match = /^GAS-TRANSCRIBE v1 audioFileId=([^\r\n]+)\r?\n\r?\n([\s\S]*)$/.exec(content);
+    return match ? { audioFileId: match[1], text: match[2] } : null;
+  },
+
+  JSON_FORMAT: 'GAS-TRANSCRIBE json v1',
+
+  transcriptJsonName(audioName) {
+    return audioName + '.transcript.json';
+  },
+
+  // The provider's whole response (e.g. Groq verbose_json with timed segments) plus the audio file id.
+  buildTranscriptJson(audioFileId, provider, model, response, createdAt) {
+    return JSON.stringify({ format: Logic.JSON_FORMAT, audioFileId, provider, model, createdAt, response }, null, 2);
+  },
+
+  parseTranscriptJson(content) {
+    try {
+      const parsed = JSON.parse(content);
+      const ok = parsed && parsed.format === Logic.JSON_FORMAT && typeof parsed.audioFileId === 'string';
+      return ok ? parsed : null;
+    } catch (e) {
+      return null;
+    }
+  },
+
+  // m:ss.d (h:mm:ss.d from one hour) for segment timestamps.
+  formatTime(seconds) {
+    const tenths = Math.round(Math.max(0, seconds) * 10);
+    const s = Math.floor(tenths / 10);
+    const pad = (n) => (n < 10 ? '0' : '') + n;
+    const h = Math.floor(s / 3600);
+    const clock = h ? h + ':' + pad(Math.floor((s % 3600) / 60)) : String(Math.floor(s / 60));
+    return clock + ':' + pad(s % 60) + '.' + (tenths % 10);
+  },
+
+  // The saved JSON result as readable text: a header line and one timed line per segment.
+  formatTranscriptJson(content) {
+    const envelope = Logic.parseTranscriptJson(content);
+    if (!envelope) return content;
+    const r = envelope.response || {};
+    const head = [envelope.provider, envelope.model, r.language,
+      typeof r.duration === 'number' ? Logic.formatTime(r.duration) : null].filter(Boolean).join(' · ');
+    const lines = Array.isArray(r.segments)
+      ? r.segments.map((s) => '[' + Logic.formatTime(s.start) + ' – ' + Logic.formatTime(s.end) + '] ' + String(s.text || '').trim())
+      : [String(r.text || '').trim()];
+    return [head, ''].concat(lines).join('\n');
+  },
+
+  // Splits text into parts, marking every case-insensitive occurrence of the query.
+  splitMatches(text, query) {
+    const source = String(text || '');
+    if (!source) return [];
+    const haystack = source.toLowerCase();
+    const needle = String(query || '').toLowerCase();
+    if (!needle || haystack.length !== source.length) return [{ text: source, match: false }];
+    const parts = [];
+    let last = 0;
+    let at = haystack.indexOf(needle);
+    while (at !== -1) {
+      if (at > last) parts.push({ text: source.slice(last, at), match: false });
+      parts.push({ text: source.slice(at, at + needle.length), match: true });
+      last = at + needle.length;
+      at = haystack.indexOf(needle, last);
+    }
+    if (last < source.length) parts.push({ text: source.slice(last), match: false });
+    return parts;
+  },
+
+  encodingFor(fileName) {
+    const ext = /\.([^.]+)$/.exec(fileName || '');
+    switch (ext && ext[1].toLowerCase()) {
+      case 'opus':
+      case 'ogg':
+        return 'OGG_OPUS';
+      case 'mp3':
+        return 'MP3';
+      case 'flac':
+        return 'FLAC';
+      case 'wav':
+        return 'LINEAR16';
+      default:
+        return null;
+    }
+  },
+
+  filterItems(items, opts) {
+    const fold = (text) => String(text || '').normalize('NFC').toLowerCase();
+    const query = fold(opts && opts.query);
+    const hide = Boolean(opts && opts.hideTranscribed);
+    return items.filter((item) => {
+      if (hide && item.status === 'done') return false;
+      if (!query) return true;
+      return fold(item.name).includes(query) || fold(item.transcriptText).includes(query);
+    });
+  },
+
+  // The list needs reloading only when a file that was running is no longer reported as running.
+  shouldReload(previousItems, report) {
+    const stillRunning = {};
+    report.forEach((r) => { if (r.state === 'running') stillRunning[r.fileId] = true; });
+    return previousItems.some((i) => i.status === 'running' && !stillRunning[i.id]);
+  },
+
+  sortItems(items, key) {
+    const copy = items.slice();
+    if (key === 'name') return copy.sort((a, b) => a.name.localeCompare(b.name));
+    return copy.sort((a, b) => b.modified - a.modified);
+  },
+
+  groupByFolder(items) {
+    const byPath = new Map();
+    items.forEach((item) => {
+      if (!byPath.has(item.folderPath)) byPath.set(item.folderPath, []);
+      byPath.get(item.folderPath).push(item);
+    });
+    return Array.from(byPath.keys())
+      .sort()
+      .map((folderPath) => ({ folderPath, items: byPath.get(folderPath) }));
+  },
+
+  // Splits text into plain parts and http(s) link parts; trailing punctuation stays outside the link.
+  splitLinks(text) {
+    const parts = [];
+    let last = 0;
+    const re = /https?:\/\/[^\s)]+/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const url = m[0].replace(/[.,;:!?]+$/, '');
+      if (m.index > last) parts.push({ text: text.slice(last, m.index) });
+      parts.push({ text: url, href: url });
+      last = m.index + url.length;
+      re.lastIndex = last;
+    }
+    if (last < text.length) parts.push({ text: text.slice(last) });
+    return parts;
+  },
+};
+
+if (typeof module !== 'undefined') module.exports = Logic;
+</script>

@@ -1,0 +1,553 @@
+<script>
+  const state = {
+    strings: {}, lang: 'en', settings: null, providers: [],
+    folders: [], items: [], folderErrors: [],
+    query: '', sort: 'date', hide: false, view: 'files',
+    loading: true, notice: null, pollTimer: null, usage: null,
+    durations: {}, durationTried: {}, durationRunning: false,
+    helpTab: 'deploy', settingsTab: null, itemsStale: false,
+  };
+  const HELP_SECTIONS = ['deploy', 'speech', 'groq', 'privacy'];
+
+  function t(key, params) {
+    const table = state.strings[state.lang] || {};
+    let text = Object.prototype.hasOwnProperty.call(table, key) ? table[key] : key;
+    Object.keys(params || {}).forEach((name) => { text = text.split('{' + name + '}').join(String(params[name])); });
+    return text;
+  }
+
+  // All dynamic content goes through textContent, never innerHTML.
+  function el(tag, props, children) {
+    const node = document.createElement(tag);
+    Object.keys(props || {}).forEach((key) => {
+      if (key === 'text') node.textContent = props.text;
+      else if (key === 'class') node.className = props.class;
+      else if (key.indexOf('on') === 0) node.addEventListener(key.slice(2), props[key]);
+      else node.setAttribute(key, props[key]);
+    });
+    (children || []).forEach((child) => { if (child) node.appendChild(child); });
+    return node;
+  }
+
+  // Text with http(s) addresses turned into links that open in a new tab.
+  function linkNodes(text) {
+    return Logic.splitLinks(text).map((part) => (
+      part.href
+        ? el('a', { href: part.href, target: '_blank', rel: 'noopener noreferrer', text: part.text })
+        : document.createTextNode(part.text)
+    ));
+  }
+
+  function call(name) {
+    const args = Array.prototype.slice.call(arguments, 1);
+    return new Promise((resolve, reject) => {
+      const runner = google.script.run
+        .withSuccessHandler((result) => (result && result.error ? reject(result.error) : resolve(result)))
+        .withFailureHandler((e) => reject({ code: 'generic', message: String((e && e.message) || e) }));
+      runner[name].apply(runner, args);
+    });
+  }
+
+  // Errors open a popup that stays until it is closed by hand (links inside it are clickable).
+  // The same text is not stacked twice, so a repeating failure (e.g. polling) opens one popup only.
+  const openErrors = {};
+  function showError(e) {
+    const text = (e && e.message) || t('error.generic');
+    if (openErrors[text]) return;
+    openErrors[text] = true;
+    dialog((close) => el('div', { class: 'error-dialog' }, [
+      el('h3', { text: t('error.title') }),
+      el('p', {}, linkNodes(text)),
+      el('div', { class: 'row' }, [
+        el('button', { class: 'btn primary', text: t('action.close'), onclick: () => close() }),
+      ]),
+    ])).then(() => { delete openErrors[text]; });
+  }
+
+  function dialog(buildBody) {
+    return new Promise((resolve) => {
+      const overlay = el('div', { class: 'overlay' });
+      const close = (value) => { overlay.remove(); resolve(value); };
+      overlay.appendChild(el('div', { class: 'dialog', role: 'dialog' }, [buildBody(close)]));
+      document.body.appendChild(overlay);
+    });
+  }
+
+  function confirmDialog(text) {
+    return dialog((close) => el('div', {}, [
+      el('p', { text }),
+      el('div', { class: 'row' }, [
+        el('button', { class: 'btn', text: t('action.cancel'), onclick: () => close(false) }),
+        el('button', { class: 'btn primary', text: t('action.confirm'), onclick: () => close(true) }),
+      ]),
+    ]));
+  }
+
+  // The Clipboard API can be blocked inside the Apps Script iframe, so fall back to execCommand.
+  function copyText(text, button) {
+    const done = () => { button.textContent = '✓ ' + t('action.copy'); };
+    const fallback = () => {
+      const area = el('textarea', { style: 'position:fixed;opacity:0' });
+      area.value = text;
+      document.body.appendChild(area);
+      area.select();
+      try { if (document.execCommand('copy')) done(); } catch (e) { /* nothing more to try */ }
+      area.remove();
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  // Text popup with search: hits are highlighted, Enter / Shift+Enter or the arrows jump between them.
+  // `raw`, when given, adds a button that switches between the formatted text and the raw content.
+  function textDialog(text, raw) {
+    return dialog((close) => {
+      let shown = text;
+      let query = '';
+      let current = 0;
+      let marks = [];
+      const pre = el('pre', {});
+      const info = el('span', { class: 'meta' });
+      const search = el('input', { type: 'text', placeholder: t('toolbar.search') });
+      const highlight = () => {
+        marks.forEach((m, i) => { m.className = i === current ? 'current' : ''; });
+        if (marks[current]) marks[current].scrollIntoView({ block: 'center' });
+        info.textContent = query ? (marks.length ? (current + 1) + '/' + marks.length : t('search.none')) : '';
+      };
+      const paint = () => {
+        pre.textContent = '';
+        marks = [];
+        Logic.splitMatches(shown, query).forEach((part) => {
+          if (part.match) {
+            const m = el('mark', { text: part.text });
+            marks.push(m);
+            pre.appendChild(m);
+          } else {
+            pre.appendChild(document.createTextNode(part.text));
+          }
+        });
+        current = 0;
+        highlight();
+      };
+      const step = (delta) => {
+        if (!marks.length) return;
+        current = (current + delta + marks.length) % marks.length;
+        highlight();
+      };
+      search.addEventListener('input', () => { query = search.value; paint(); });
+      search.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); step(e.shiftKey ? -1 : 1); }
+      });
+      const toggle = raw === undefined ? null : el('button', {
+        class: 'btn', text: t('action.showRaw'),
+        onclick: (event) => {
+          const toRaw = shown !== raw;
+          shown = toRaw ? raw : text;
+          event.target.textContent = t(toRaw ? 'action.showFormatted' : 'action.showRaw');
+          paint();
+        },
+      });
+      paint();
+      return el('div', {}, [
+        el('div', { class: 'row search' }, [
+          search,
+          el('button', { class: 'btn', text: '▲', title: t('search.prev'), onclick: () => step(-1) }),
+          el('button', { class: 'btn', text: '▼', title: t('search.next'), onclick: () => step(1) }),
+          info,
+        ]),
+        pre,
+        el('div', { class: 'row' }, [
+          toggle,
+          el('button', { class: 'btn', text: t('action.copy'), onclick: (event) => copyText(shown, event.target) }),
+          el('button', { class: 'btn primary', text: t('action.close'), onclick: () => close() }),
+        ]),
+      ]);
+    });
+  }
+
+  async function loadUsage() {
+    try { state.usage = await call('api_getUsage'); } catch (e) { state.usage = null; }
+  }
+
+  async function loadFiles() {
+    state.loading = true;
+    render();
+    try {
+      const result = await call('api_listFiles');
+      state.items = result.items;
+      state.folderErrors = result.errors;
+      state.notice = null;
+    } catch (e) {
+      showError(e);
+    }
+    await loadUsage();
+    state.loading = false;
+    render();
+    ensurePolling();
+    loadDurations();
+  }
+
+  // Lengths are read lazily, 5 files per call, after the list is already on screen. A file is tried once per page load.
+  async function loadDurations() {
+    if (state.durationRunning) return;
+    state.durationRunning = true;
+    try {
+      for (;;) {
+        const batch = state.items.filter((i) => !state.durations[i.id] && !state.durationTried[i.id]).slice(0, 5);
+        if (!batch.length) break;
+        batch.forEach((i) => { state.durationTried[i.id] = true; });
+        const result = await call('api_getDurations', batch.map((i) => i.id));
+        Object.keys(result).forEach((id) => { if (result[id]) state.durations[id] = result[id]; });
+        renderList();
+      }
+    } catch (e) { /* lengths are optional; the list works without them */ }
+    state.durationRunning = false;
+  }
+
+  function clock(totalSeconds) {
+    const s = Math.round(totalSeconds);
+    const h = Math.floor(s / 3600);
+    const pad = (n) => (n < 10 ? '0' : '') + n;
+    return (h ? h + ':' + pad(Math.floor((s % 3600) / 60)) : String(Math.floor(s / 60))) + ':' + pad(s % 60);
+  }
+
+  async function loadFolders() {
+    try { state.folders = await call('api_getFolders'); } catch (e) { showError(e); }
+  }
+
+  // One poll at a time: the next one is scheduled only after the previous finished.
+  function ensurePolling() {
+    const running = state.items.some((i) => i.status === 'running');
+    if (running && !state.pollTimer) state.pollTimer = setTimeout(pollOnce, 5000);
+  }
+
+  async function pollOnce() {
+    let reload = false;
+    try {
+      const report = await call('api_pollOperations');
+      reload = Logic.shouldReload(state.items, report);
+    } catch (e) { showError(e); }
+    state.pollTimer = null;
+    if (reload) await loadFiles();
+    else ensurePolling();
+  }
+
+  async function transcribe(item) {
+    const overwrite = item.status === 'done';
+    if (overwrite && !(await confirmDialog(t('confirm.retranscribe', { name: item.name })))) return;
+    // Groq answers only when the transcript is ready, so show the running state while the call is open.
+    item.status = 'running';
+    renderList();
+    try {
+      const result = await call('api_transcribe', item.id, overwrite);
+      if (result.state === 'error') showError({ message: t('error.' + result.code) + (result.detail ? ' (' + result.detail + ')' : '') });
+    } catch (e) { showError(e); }
+    await loadFiles();
+  }
+
+  async function viewText(item) {
+    try { await textDialog(await call('api_getTranscript', item.id)); } catch (e) { showError(e); }
+  }
+
+  async function viewJson(item) {
+    try {
+      const rawJson = await call('api_getTranscriptJson', item.id);
+      await textDialog(Logic.formatTranscriptJson(rawJson), rawJson);
+    } catch (e) { showError(e); }
+  }
+
+  async function deleteItem(item) {
+    if (!(await confirmDialog(t('confirm.delete', { name: item.name })))) return;
+    try { await call('api_deleteFile', item.id); } catch (e) { showError(e); }
+    await loadFiles();
+  }
+
+  // Folders are managed in Settings. Only the folder list is redrawn (unsaved settings stay in place);
+  // the file list is reloaded the next time the Files tab is opened.
+  function refreshFolders() {
+    const node = document.getElementById('folders');
+    if (node) node.replaceWith(renderFolders());
+  }
+
+  async function addFolder(input) {
+    try { await call('api_addFolder', input); } catch (e) { showError(e); return; }
+    await loadFolders();
+    state.itemsStale = true;
+    refreshFolders();
+  }
+
+  async function removeFolder(id) {
+    try { await call('api_removeFolder', id); } catch (e) { showError(e); return; }
+    await loadFolders();
+    state.itemsStale = true;
+    refreshFolders();
+  }
+
+  function statusText(item) {
+    if (item.status !== 'error') return t('status.' + item.status);
+    return t('error.' + (item.errorCode || 'generic')) + (item.errorDetail ? ' (' + item.errorDetail + ')' : '');
+  }
+
+  function renderFolders() {
+    const input = el('input', { type: 'text', placeholder: t('folders.addPlaceholder'), size: 40 });
+    const chips = state.folders.map((f) => el('span', { class: 'chip' }, [
+      el('span', { text: '📁 ' + f.name }),
+      el('button', { title: t('folders.remove'), text: '✕', onclick: () => removeFolder(f.id) }),
+    ]));
+    return el('section', { id: 'folders' }, [
+      el('h2', { text: t('folders.title') }),
+      el('div', { class: 'chips' }, chips.length ? chips : [el('span', { text: t('folders.empty') })]),
+      el('div', { class: 'row' }, [
+        input,
+        el('button', { class: 'btn', text: t('folders.add'), onclick: () => { if (input.value.trim()) addFolder(input.value); } }),
+      ]),
+    ]);
+  }
+
+  function renderToolbar() {
+    const search = el('input', { type: 'text', placeholder: t('toolbar.search'), value: state.query });
+    search.addEventListener('input', () => { state.query = search.value; renderList(); });
+    const sort = el('select', {}, [
+      el('option', { value: 'date', text: t('toolbar.sort.date') }),
+      el('option', { value: 'name', text: t('toolbar.sort.name') }),
+    ]);
+    sort.value = state.sort;
+    sort.addEventListener('change', () => { state.sort = sort.value; renderList(); });
+    const hide = el('input', { type: 'checkbox' });
+    hide.checked = state.hide;
+    hide.addEventListener('change', () => { state.hide = hide.checked; renderList(); });
+    return el('div', { class: 'row toolbar' }, [
+      search,
+      el('label', {}, [document.createTextNode(t('toolbar.sortLabel') + ': '), sort]),
+      el('label', {}, [hide, document.createTextNode(' ' + t('toolbar.hideTranscribed'))]),
+    ]);
+  }
+
+  function renderItem(item) {
+    const actions = [];
+    if (item.status === 'done') {
+      actions.push(el('button', { class: 'btn', text: t('action.view'), onclick: () => viewText(item) }));
+      if (item.hasJson) actions.push(el('button', { class: 'btn', text: t('action.viewJson'), onclick: () => viewJson(item) }));
+      actions.push(el('button', { class: 'btn', text: t('action.retranscribe'), onclick: () => transcribe(item) }));
+    } else if (item.status !== 'running') {
+      actions.push(el('button', { class: 'btn primary', text: t('action.transcribe'), onclick: () => transcribe(item) }));
+    }
+    actions.push(el('button', { class: 'btn danger', text: t('action.delete'), onclick: () => deleteItem(item) }));
+    // Language of this recording; empty = the default from Settings (shown as the placeholder).
+    const language = el('input', {
+      type: 'text', size: 7, list: 'langs', value: item.language || '',
+      placeholder: state.settings.speechLanguage, title: t('file.languageHint'),
+    });
+    if (item.status === 'running') language.disabled = true;
+    language.addEventListener('change', async () => {
+      try {
+        item.language = await call('api_setFileLanguage', item.id, language.value.trim());
+      } catch (e) { showError(e); }
+      language.value = item.language || '';
+    });
+    actions.unshift(el('label', { class: 'lang' }, [document.createTextNode(t('file.language') + ' '), language]));
+    const length = state.durations[item.id];
+    return el('div', { class: 'file' }, [
+      el('div', { class: 'name', text: '🎵 ' + item.name }),
+      el('div', { class: 'meta' }, [
+        el('span', { text: item.modifiedText + ' · ' }),
+        length ? el('span', { text: '⏱ ' + clock(length.durationSeconds) + ' · '
+          + (state.settings.provider === 'google-speech' ? t('file.quota', { min: minutes(length.billedSeconds) }) + ' · ' : '') }) : null,
+        el('span', { class: 'status-' + item.status, text: statusText(item) }),
+      ]),
+      el('div', { class: 'actions' }, actions),
+    ]);
+  }
+
+  function renderList() {
+    const host = document.getElementById('list');
+    if (!host) return;
+    host.textContent = '';
+    if (state.loading) { host.appendChild(el('p', { text: t('files.loading') })); return; }
+    const visible = Logic.sortItems(Logic.filterItems(state.items, { query: state.query, hideTranscribed: state.hide }), state.sort);
+    if (!visible.length) { host.appendChild(el('p', { text: t('files.empty') })); return; }
+    Logic.groupByFolder(visible).forEach((group) => {
+      host.appendChild(el('div', { class: 'group-title', text: '📁 ' + group.folderPath }));
+      group.items.forEach((item) => host.appendChild(renderItem(item)));
+    });
+  }
+
+  function minutes(seconds) {
+    return (seconds / 60).toLocaleString(state.lang, { maximumFractionDigits: 1 });
+  }
+
+  function renderUsage() {
+    const u = state.usage;
+    // The monthly free quota is a Google Speech-to-Text concept.
+    if (!u || state.settings.provider !== 'google-speech') return null;
+    return el('section', { class: 'usage' }, [
+      el('h2', { text: t('usage.title', { month: u.month }) }),
+      el('div', { class: 'bar' }, [
+        el('div', { class: 'fill' + (u.exceeded ? ' full' : ''), style: 'width:' + u.percent + '%' }),
+      ]),
+      el('div', { text: t('usage.line', { used: minutes(u.usedSeconds), limit: minutes(u.limitSeconds), remaining: minutes(u.remainingSeconds) }) }),
+      u.exceeded ? el('div', { class: 'notice error', text: t('usage.exceeded') }) : null,
+      el('div', { class: 'meta' }, linkNodes(t('usage.note'))),
+    ]);
+  }
+
+  // The active provider and default language, so it is always visible which service will transcribe.
+  function renderProviderLine() {
+    const p = state.providers.find((x) => x.id === state.settings.provider);
+    return el('div', { class: 'provider-line' }, [
+      el('span', { text: t('files.provider', { name: p ? p.name : state.settings.provider, language: state.settings.speechLanguage }) }),
+      el('button', { class: 'btn', text: t('files.changeProvider'), onclick: () => { state.view = 'settings'; render(); } }),
+    ]);
+  }
+
+  function renderFilesView() {
+    const parts = [renderProviderLine(), renderUsage()];
+    if (!state.folders.length) {
+      parts.push(el('div', { class: 'notice' }, [
+        document.createTextNode(t('files.noFolders') + ' '),
+        el('button', { class: 'btn', text: t('nav.settings'), onclick: () => { state.view = 'settings'; render(); } }),
+      ]));
+    }
+    state.folderErrors.forEach((e) => parts.push(el('div', { class: 'notice error', text: e.folderId + ': ' + e.message })));
+    const languages = el('datalist', { id: 'langs' }, ['cs-CZ', 'sk-SK', 'en-US', 'en-GB', 'de-DE', 'pl-PL', 'fr-FR', 'es-ES', 'uk-UA', 'ru-RU']
+      .map((code) => el('option', { value: code })));
+    parts.push(renderToolbar(), languages, el('div', { id: 'list' }));
+    return el('div', {}, parts.filter(Boolean));
+  }
+
+  // Tab strip; the caller decides what a click does (re-render, or only toggle panels).
+  function tabStrip(items, activeId, onSelect) {
+    const buttons = items.map((item) => el('button', {
+      class: item.id === activeId ? 'active' : '', 'data-id': item.id, text: item.label,
+      onclick: () => onSelect(item.id),
+    }));
+    return { node: el('div', { class: 'tabs' }, buttons), buttons };
+  }
+
+  function renderSettingsView() {
+    const s = state.settings;
+    const provider = el('select', {}, state.providers.map((p) => el('option', { value: p.id, text: p.name })));
+    provider.value = s.provider;
+    const language = el('input', { type: 'text', value: s.speechLanguage });
+    const ui = el('select', {}, [
+      el('option', { value: 'cs', text: 'Čeština' }),
+      el('option', { value: 'en', text: 'English' }),
+    ]);
+    ui.value = state.lang;
+    const field = (label, control) => el('label', { class: 'field' }, [el('span', { text: label }), control]);
+
+    // Google Cloud Speech-to-Text
+    const bucket = el('input', { type: 'text', value: s.bucket });
+    const model = el('select', {}, ['latest_long', 'default'].map((id) => el('option', { value: id, text: t('model.' + id) })));
+    model.value = s.model || 'latest_long';
+    const freeMinutes = el('input', { type: 'number', min: 0, step: 1, value: String(s.freeMinutes) });
+
+    // Groq: the stored key is never sent to the browser, so the field starts empty ("empty = keep").
+    const groqKey = el('input', {
+      type: 'password', autocomplete: 'off', value: '',
+      placeholder: s.groqKeySet ? t('settings.groqKeyStored') : 'gsk_…',
+    });
+    const groqModel = el('select', {}, ['whisper-large-v3', 'whisper-large-v3-turbo'].map((id) => el('option', { value: id, text: t('model.' + id) })));
+    groqModel.value = s.groqModel || 'whisper-large-v3';
+
+    // One tab per provider; switching only toggles the panels, so unsaved edits are kept.
+    const panels = {
+      'google-speech': el('div', {}, [field(t('settings.bucket'), bucket), field(t('settings.model'), model), field(t('settings.freeMinutes'), freeMinutes)]),
+      groq: el('div', {}, [field(t('settings.groqApiKey'), groqKey), field(t('settings.groqModel'), groqModel)]),
+    };
+    const labelFor = (p) => p.name + (provider.value === p.id ? ' · ' + t('settings.active') : '');
+    const strip = tabStrip(state.providers.map((p) => ({ id: p.id, label: labelFor(p) })), state.settingsTab || s.provider, (id) => showTab(id));
+    function showTab(id) {
+      state.settingsTab = id;
+      Object.keys(panels).forEach((key) => { panels[key].style.display = key === id ? '' : 'none'; });
+      strip.buttons.forEach((b) => b.classList.toggle('active', b.getAttribute('data-id') === id));
+    }
+    provider.addEventListener('change', () => {
+      state.providers.forEach((p, i) => { strip.buttons[i].textContent = labelFor(p); });
+      showTab(provider.value);
+    });
+    const container = el('div', {}, [
+      el('h2', { text: t('nav.settings') }),
+      renderFolders(),
+      el('h2', { text: t('settings.providerTitle') }),
+      field(t('settings.provider'), provider),
+      field(t('settings.speechLanguage'), language),
+      field(t('settings.uiLang'), ui),
+      strip.node,
+      panels['google-speech'], panels.groq,
+      el('button', { class: 'btn primary', text: t('settings.save'), onclick: async () => {
+        const next = {
+          provider: provider.value, bucket: bucket.value.trim(), speechLanguage: language.value.trim(),
+          uiLang: ui.value, freeMinutes: freeMinutes.value.trim(), model: model.value,
+          groqModel: groqModel.value, groqApiKey: groqKey.value.trim(),
+        };
+        try {
+          await call('api_saveSettings', next);
+          state.settings = Object.assign({}, next, { groqKeySet: s.groqKeySet || next.groqApiKey !== '' });
+          delete state.settings.groqApiKey;
+          state.lang = next.uiLang;
+          await loadUsage();
+          render();
+          document.getElementById('app').appendChild(el('div', { class: 'notice', text: t('settings.saved') }));
+        } catch (e) { showError(e); }
+      } }),
+    ]);
+    showTab(state.settingsTab || s.provider);
+    return container;
+  }
+
+  function renderHelpView() {
+    const strip = tabStrip(HELP_SECTIONS.map((id) => ({ id, label: t('helptab.' + id) })), state.helpTab,
+      (id) => { state.helpTab = id; render(); });
+    const steps = t('help.' + state.helpTab + '.steps').split('\n').filter((line) => line.trim());
+    return el('div', {}, [
+      el('h2', { text: t('nav.help') }),
+      strip.node,
+      el('h3', { text: t('help.' + state.helpTab + '.title') }),
+      el('ol', { class: 'steps' }, steps.map((line) => el('li', {}, linkNodes(line)))),
+    ]);
+  }
+
+  function render() {
+    const app = document.getElementById('app');
+    app.textContent = '';
+    const tab = (view, key) => el('button', {
+      class: state.view === view ? 'active' : '', text: t(key),
+      onclick: () => {
+        state.view = view;
+        render();
+        if (view === 'files' && state.itemsStale) { state.itemsStale = false; loadFiles(); }
+      },
+    });
+    app.appendChild(el('nav', {}, [
+      el('span', { class: 'brand', text: t('app.title') }),
+      el('span', { class: 'version', text: state.version ? 'v' + state.version : '' }),
+      tab('files', 'nav.files'), tab('settings', 'nav.settings'), tab('help', 'nav.help'),
+    ]));
+    if (state.notice) app.appendChild(el('div', { class: 'notice' + (state.notice.error ? ' error' : ''), text: state.notice.text }));
+    if (!state.settings) return;
+    if (state.view === 'files') { app.appendChild(renderFilesView()); renderList(); }
+    else if (state.view === 'settings') app.appendChild(renderSettingsView());
+    else app.appendChild(renderHelpView());
+  }
+
+  async function start() {
+    try {
+      const boot = await call('api_getBootstrap', navigator.language);
+      state.strings = boot.strings;
+      state.lang = boot.lang;
+      state.settings = boot.settings;
+      state.providers = boot.providers;
+      state.version = boot.version;
+      await loadFolders();
+      await loadFiles();
+    } catch (e) {
+      state.notice = { error: true, text: (e && e.message) || 'Error' };
+      render();
+    }
+  }
+  start();
+</script>

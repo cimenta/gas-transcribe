@@ -1,0 +1,11 @@
+{
+  "name": "gas-transcribe",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Google Apps Script web app that transcribes audio files from Google Drive",
+  "scripts": {
+    "build": "node scripts/build-client.js",
+    "test": "node --test"
+  }
+}

@@ -1,0 +1,26 @@
+# Local config (contains your Script ID)
+.clasp.json
+
+# Tooling scratch space
+.superpowers/
+
+# Dependencies
+node_modules/
+
+# Local test recordings (may contain personal data)
+samples/
+*.opus
+*.mp3
+*.wav
+*.flac
+*.m4a
+
+# Local helper scripts
+commit-and-push.bat
+p.bat
+
+# Environment / OS noise
+.env
+.env.*
+.DS_Store
+Thumbs.db
