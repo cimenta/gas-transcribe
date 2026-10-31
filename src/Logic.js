@@ -50,11 +50,17 @@ const Logic = {
     const envelope = Logic.parseTranscriptJson(content);
     if (!envelope) return content;
     const r = envelope.response || {};
-    const head = [envelope.provider, envelope.model, r.language,
-      typeof r.duration === 'number' ? Logic.formatTime(r.duration) : null].filter(Boolean).join(' · ');
-    const lines = Array.isArray(r.segments)
-      ? r.segments.map((s) => '[' + Logic.formatTime(s.start) + ' – ' + Logic.formatTime(s.end) + '] ' + String(s.text || '').trim())
-      : [String(r.text || '').trim()];
+    // Groq/Whisper: segments with text; Deepgram: results.utterances with transcript.
+    const results = r.results || {};
+    const channel = (results.channels && results.channels[0]) || {};
+    const alternative = (channel.alternatives && channel.alternatives[0]) || {};
+    const duration = typeof r.duration === 'number' ? r.duration : (r.metadata && r.metadata.duration);
+    const head = [envelope.provider, envelope.model, r.language || channel.detected_language,
+      typeof duration === 'number' ? Logic.formatTime(duration) : null].filter(Boolean).join(' · ');
+    const parts = Array.isArray(r.segments) ? r.segments : (Array.isArray(results.utterances) ? results.utterances : null);
+    const lines = parts
+      ? parts.map((s) => '[' + Logic.formatTime(s.start) + ' – ' + Logic.formatTime(s.end) + '] ' + String(s.text !== undefined ? s.text : s.transcript || '').trim())
+      : [String(r.text !== undefined ? r.text : alternative.transcript || '').trim()];
     return [head, ''].concat(lines).join('\n');
   },
 

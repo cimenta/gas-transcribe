@@ -168,8 +168,16 @@ function api_saveSettings(input) {
     Settings_set_('model', v.model);
     Settings_set_('groqModel', v.groqModel);
     if (v.groqApiKey) Settings_set_('groqApiKey', v.groqApiKey);
+    Settings_set_('deepgramModel', v.deepgramModel);
+    if (v.deepgramApiKey) Settings_set_('deepgramApiKey', v.deepgramApiKey);
+    if (v.deepgramBillingKey) Settings_set_('deepgramBillingKey', v.deepgramBillingKey);
     return true;
   });
+}
+
+// Remaining Deepgram credit: null without a billing key, else {balance} or {error}.
+function api_getDeepgramBalance() {
+  return guard_(() => deepgramBalance_());
 }
 
 function api_getUsage() {

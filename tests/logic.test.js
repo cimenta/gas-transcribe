@@ -23,6 +23,25 @@ test('formatTranscriptJson falls back to the plain text without segments, and to
   assert.strictEqual(Logic.formatTranscriptJson('not json'), 'not json');
 });
 
+test('formatTranscriptJson shows Deepgram utterances as timed lines', () => {
+  const content = Logic.buildTranscriptJson('abc', 'deepgram', 'nova-3', {
+    metadata: { duration: 12.5 },
+    results: {
+      channels: [{ detected_language: 'cs', alternatives: [{ transcript: 'Ahoj světe' }] }],
+      utterances: [{ start: 0, end: 5.2, transcript: ' Ahoj' }, { start: 5.2, end: 12.5, transcript: 'světe ' }],
+    },
+  }, '2026-10-31T10:00:00.000Z');
+  assert.strictEqual(Logic.formatTranscriptJson(content),
+    'deepgram · nova-3 · cs · 0:12.5\n\n[0:00.0 – 0:05.2] Ahoj\n[0:05.2 – 0:12.5] světe');
+});
+
+test('formatTranscriptJson falls back to the channel transcript when Deepgram returns no utterances', () => {
+  const content = Logic.buildTranscriptJson('abc', 'deepgram', 'nova-3', {
+    results: { channels: [{ alternatives: [{ transcript: ' Jen text ' }] }] },
+  }, '2026-10-31T10:00:00.000Z');
+  assert.strictEqual(Logic.formatTranscriptJson(content), 'deepgram · nova-3\n\nJen text');
+});
+
 test('splitMatches marks every case-insensitive occurrence', () => {
   assert.deepStrictEqual(Logic.splitMatches('Ahoj ahoj světe', 'AHOJ'), [
     { text: 'Ahoj', match: true }, { text: ' ', match: false }, { text: 'ahoj', match: true }, { text: ' světe', match: false },

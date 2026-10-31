@@ -2,11 +2,14 @@
 
 A Google Apps Script web app that turns audio files from your Google Drive into text transcripts.
 You connect one or more Drive folders (subfolders included), then transcribe, read or delete files
-from an admin console. Two providers are built in and switchable in Settings:
+from an admin console. Three providers are built in and switchable in Settings:
 
 - **Google Cloud Speech-to-Text** (v1, asynchronous, optional model choice; the app counts the monthly free quota).
 - **Groq (Whisper)** (synchronous, API key stored server-side only; the full result with timed segments is
   saved next to the audio as `<name>.transcript.json` and can be viewed formatted or raw).
+
+- **Deepgram** (synchronous, nova-3 / nova-2, API key stored server-side only, `mip_opt_out` sent with every
+  request; timed utterances are saved as `<name>.transcript.json`).
 
 Other features: per-file language override, audio length estimates, searchable text/JSON viewers,
 persistent error popups with details, and an app version shown in the console.
@@ -41,7 +44,7 @@ Speech-to-Text** inside the app to create the Cloud project, billing, bucket and
 
 ## Layout
 
-- `src/Logic.js`, `I18n.js`, `Settings.js`, `Auth.js`, `Operations.js`, `Drive.js`, `GoogleSpeech.js`, `GroqSpeech.js`,
+- `src/Logic.js`, `I18n.js`, `Settings.js`, `Auth.js`, `Operations.js`, `Drive.js`, `GoogleSpeech.js`, `GroqSpeech.js`, `DeepgramSpeech.js`,
   `Usage.js`, `AudioDuration.js`
   hold logic that is unit tested in Node (`tests/`); the GAS-specific functions sit below them.
 - `src/Api.js` is the only surface the browser can call; `src/Client.html` is the single-page UI.
@@ -53,12 +56,12 @@ Speech-to-Text** inside the app to create the Cloud project, billing, bucket and
 
 ## Privacy note
 
-Audio is sent to the provider you select. For Groq, enable Zero Data Retention in your Groq account.
+Audio is sent to the provider you select. For Groq, enable Zero Data Retention in your Groq account; Deepgram requests carry `mip_opt_out=true`.
 Transcripts and API keys are never logged.
 
 ## Roadmap
 
-Automatic transcription of new files, e-mailing transcripts and further providers (e.g. Deepgram).
+Automatic transcription of new files, e-mailing transcripts and further providers, speaker separation (diarization).
 
 ## License
 

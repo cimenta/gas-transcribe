@@ -7,7 +7,7 @@
     durations: {}, durationTried: {}, durationRunning: false,
     helpTab: 'deploy', settingsTab: null, itemsStale: false,
   };
-  const HELP_SECTIONS = ['deploy', 'speech', 'groq', 'privacy'];
+  const HELP_SECTIONS = ['deploy', 'speech', 'groq', 'deepgram', 'privacy'];
 
   function t(key, params) {
     const table = state.strings[state.lang] || {};
@@ -170,6 +170,10 @@
 
   async function loadUsage() {
     try { state.usage = await call('api_getUsage'); } catch (e) { state.usage = null; }
+    state.balance = null;
+    if (state.settings.provider === 'deepgram' && state.settings.deepgramBillingKeySet) {
+      try { state.balance = await call('api_getDeepgramBalance'); } catch (e) { state.balance = { error: 'failed' }; }
+    }
   }
 
   async function loadFiles() {
@@ -238,7 +242,7 @@
   async function transcribe(item) {
     const overwrite = item.status === 'done';
     if (overwrite && !(await confirmDialog(t('confirm.retranscribe', { name: item.name })))) return;
-    // Groq answers only when the transcript is ready, so show the running state while the call is open.
+    // Groq and Deepgram answer only when the transcript is ready, so show the running state while the call is open.
     item.status = 'running';
     renderList();
     try {
@@ -394,6 +398,13 @@
     ]);
   }
 
+  function renderBalance() {
+    const b = state.balance;
+    if (!b || state.settings.provider !== 'deepgram') return null;
+    if (b.error) return el('div', { class: 'meta', text: t('balance.' + b.error) });
+    return el('div', { class: 'provider-line', text: t('balance.line', { amount: b.balance }) });
+  }
+
   // The active provider and default language, so it is always visible which service will transcribe.
   function renderProviderLine() {
     const p = state.providers.find((x) => x.id === state.settings.provider);
@@ -404,7 +415,7 @@
   }
 
   function renderFilesView() {
-    const parts = [renderProviderLine(), renderUsage()];
+    const parts = [renderProviderLine(), renderUsage(), renderBalance()];
     if (!state.folders.length) {
       parts.push(el('div', { class: 'notice' }, [
         document.createTextNode(t('files.noFolders') + ' '),
@@ -453,10 +464,25 @@
     const groqModel = el('select', {}, ['whisper-large-v3', 'whisper-large-v3-turbo'].map((id) => el('option', { value: id, text: t('model.' + id) })));
     groqModel.value = s.groqModel || 'whisper-large-v3';
 
+    // Deepgram: same "empty = keep" handling of the key.
+    const deepgramKey = el('input', {
+      type: 'password', autocomplete: 'off', value: '',
+      placeholder: s.deepgramKeySet ? t('settings.deepgramKeyStored') : t('settings.deepgramKeyPlaceholder'),
+    });
+    const deepgramBillingKey = el('input', {
+      type: 'password', autocomplete: 'off', value: '',
+      placeholder: s.deepgramBillingKeySet ? t('settings.deepgramKeyStored') : t('settings.deepgramBillingPlaceholder'),
+    });
+    const deepgramModel = el('select', {},['nova-3', 'nova-2'].map((id) => el('option', { value: id, text: t('model.' + id) })));
+    deepgramModel.value = s.deepgramModel || 'nova-3';
+
     // One tab per provider; switching only toggles the panels, so unsaved edits are kept.
     const panels = {
       'google-speech': el('div', {}, [field(t('settings.bucket'), bucket), field(t('settings.model'), model), field(t('settings.freeMinutes'), freeMinutes)]),
       groq: el('div', {}, [field(t('settings.groqApiKey'), groqKey), field(t('settings.groqModel'), groqModel)]),
+      deepgram: el('div', {}, [field(t('settings.deepgramApiKey'), deepgramKey), field(t('settings.deepgramModel'), deepgramModel),
+        field(t('settings.deepgramBillingKey'), deepgramBillingKey),
+        el('div', { class: 'meta' }, linkNodes(t('settings.deepgramBillingNote')))]),
     };
     const labelFor = (p) => p.name + (provider.value === p.id ? ' · ' + t('settings.active') : '');
     const strip = tabStrip(state.providers.map((p) => ({ id: p.id, label: labelFor(p) })), state.settingsTab || s.provider, (id) => showTab(id));
@@ -477,17 +503,25 @@
       field(t('settings.speechLanguage'), language),
       field(t('settings.uiLang'), ui),
       strip.node,
-      panels['google-speech'], panels.groq,
+      panels['google-speech'], panels.groq, panels.deepgram,
       el('button', { class: 'btn primary', text: t('settings.save'), onclick: async () => {
         const next = {
           provider: provider.value, bucket: bucket.value.trim(), speechLanguage: language.value.trim(),
           uiLang: ui.value, freeMinutes: freeMinutes.value.trim(), model: model.value,
           groqModel: groqModel.value, groqApiKey: groqKey.value.trim(),
+          deepgramModel: deepgramModel.value, deepgramApiKey: deepgramKey.value.trim(),
+          deepgramBillingKey: deepgramBillingKey.value.trim(),
         };
         try {
           await call('api_saveSettings', next);
-          state.settings = Object.assign({}, next, { groqKeySet: s.groqKeySet || next.groqApiKey !== '' });
+          state.settings = Object.assign({}, next, {
+            groqKeySet: s.groqKeySet || next.groqApiKey !== '',
+            deepgramKeySet: s.deepgramKeySet || next.deepgramApiKey !== '',
+            deepgramBillingKeySet: s.deepgramBillingKeySet || next.deepgramBillingKey !== '',
+          });
           delete state.settings.groqApiKey;
+          delete state.settings.deepgramApiKey;
+          delete state.settings.deepgramBillingKey;
           state.lang = next.uiLang;
           await loadUsage();
           render();

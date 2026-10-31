@@ -2,6 +2,7 @@ const Settings = {
   // Speech-to-Text v1 models listed for Czech; there is no telephony model for cs-CZ.
   MODELS: ['latest_long', 'default'],
   GROQ_MODELS: ['whisper-large-v3', 'whisper-large-v3-turbo'],
+  DEEPGRAM_MODELS: ['nova-3', 'nova-2'],
 
   parseFolderId(input) {
     const text = String(input || '').trim();
@@ -31,12 +32,19 @@ const Settings = {
     // An empty key means "keep the stored one"; the key is never sent back to the browser.
     const groqApiKey = String(s.groqApiKey || '').trim();
     if (groqApiKey !== '' && !/^[A-Za-z0-9_-]{20,200}$/.test(groqApiKey)) return { ok: false, field: 'groqApiKey' };
+    const deepgramModel = s.deepgramModel === undefined ? 'nova-3' : s.deepgramModel;
+    if (Settings.DEEPGRAM_MODELS.indexOf(deepgramModel) === -1) return { ok: false, field: 'deepgramModel' };
+    const deepgramApiKey = String(s.deepgramApiKey || '').trim();
+    if (deepgramApiKey !== '' && !/^[A-Za-z0-9_-]{20,200}$/.test(deepgramApiKey)) return { ok: false, field: 'deepgramApiKey' };
+    // Optional key with the billing:read scope, used only to show the remaining credit.
+    const deepgramBillingKey = String(s.deepgramBillingKey || '').trim();
+    if (deepgramBillingKey !== '' && !/^[A-Za-z0-9_-]{20,200}$/.test(deepgramBillingKey)) return { ok: false, field: 'deepgramBillingKey' };
     const rawFree = s.freeMinutes === undefined ? 60 : s.freeMinutes;
     const freeMinutes = typeof rawFree === 'string' && rawFree.trim() === '' ? NaN : Number(rawFree);
     if (!Number.isInteger(freeMinutes) || freeMinutes < 0 || freeMinutes > 100000) return { ok: false, field: 'freeMinutes' };
     return {
       ok: true,
-      value: { provider: s.provider, bucket: s.bucket, speechLanguage: s.speechLanguage, uiLang: s.uiLang, freeMinutes, model, groqModel, groqApiKey },
+      value: { provider: s.provider, bucket: s.bucket, speechLanguage: s.speechLanguage, uiLang: s.uiLang, freeMinutes, model, groqModel, groqApiKey, deepgramModel, deepgramApiKey, deepgramBillingKey },
     };
   },
 };
@@ -88,6 +96,9 @@ function getSettings_() {
     model: Settings_get_('model') || 'latest_long',
     groqModel: Settings_get_('groqModel') || 'whisper-large-v3',
     groqKeySet: Boolean(Settings_get_('groqApiKey')),
+    deepgramModel: Settings_get_('deepgramModel') || 'nova-3',
+    deepgramKeySet: Boolean(Settings_get_('deepgramApiKey')),
+    deepgramBillingKeySet: Boolean(Settings_get_('deepgramBillingKey')),
   };
 }
 

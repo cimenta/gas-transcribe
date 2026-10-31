@@ -37,6 +37,19 @@ test('validateSettings validates the Groq model and key', () => {
   assert.deepStrictEqual(run({ groqApiKey: 'bad key' }), { ok: false, field: 'groqApiKey' });
 });
 
+test('validateSettings validates the Deepgram model and key', () => {
+  const run = (extra) => Settings.validateSettings(Object.assign({}, valid, extra), ['google-speech', 'groq', 'deepgram']);
+  assert.strictEqual(run({ provider: 'deepgram', deepgramModel: 'nova-2' }).ok, true);
+  assert.deepStrictEqual(run({ deepgramModel: 'gpt-4' }), { ok: false, field: 'deepgramModel' });
+  assert.strictEqual(run({ deepgramApiKey: 'a1b2c3d4'.repeat(5) }).value.deepgramApiKey, 'a1b2c3d4'.repeat(5));
+  assert.strictEqual(run({ deepgramApiKey: '  ' }).value.deepgramApiKey, '');
+  assert.deepStrictEqual(run({ deepgramApiKey: 'bad key' }), { ok: false, field: 'deepgramApiKey' });
+  assert.strictEqual(run({}).value.deepgramModel, 'nova-3');
+  assert.strictEqual(run({ deepgramBillingKey: 'a1b2c3d4'.repeat(5) }).value.deepgramBillingKey, 'a1b2c3d4'.repeat(5));
+  assert.strictEqual(run({}).value.deepgramBillingKey, '');
+  assert.deepStrictEqual(run({ deepgramBillingKey: 'bad key' }), { ok: false, field: 'deepgramBillingKey' });
+});
+
 test('validateSettings defaults the Groq model when absent', () => {
   const input = Object.assign({}, valid);
   delete input.groqModel;
@@ -68,7 +81,8 @@ test('validateSettings defaults freeMinutes to 60 when absent', () => {
 });
 
 test('validateSettings accepts valid settings', () => {
-  assert.deepStrictEqual(Settings.validateSettings(valid, ['google-speech']), { ok: true, value: valid });
+  assert.deepStrictEqual(Settings.validateSettings(valid, ['google-speech']),
+    { ok: true, value: Object.assign({ deepgramModel: 'nova-3', deepgramApiKey: '', deepgramBillingKey: '' }, valid) });
 });
 
 test('validateSettings accepts an empty bucket and empty uiLang', () => {

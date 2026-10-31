@@ -30,12 +30,12 @@ test('resolveLang prefers saved value, then browser language', () => {
 
 test('every operation error code has a translation', () => {
   ['noSpeech', 'unsupportedFormat', 'noBucket', 'bucketWrite', 'generic', 'transcriptExists', 'transcriptWrite',
-    'noKey', 'invalidKey', 'tooLarge', 'rateLimit', 'badLanguage']
+    'noKey', 'invalidKey', 'tooLarge', 'rateLimit', 'badLanguage', 'noCredit']
     .forEach((code) => assert.ok(('error.' + code) in I18n.STRINGS.cs, code));
 });
 
 test('help chapters have a title and steps in both languages', () => {
-  ['deploy', 'speech', 'groq', 'privacy'].forEach((id) => {
+  ['deploy', 'speech', 'groq', 'deepgram', 'privacy'].forEach((id) => {
     ['cs', 'en'].forEach((lang) => {
       assert.ok(I18n.STRINGS[lang]['helptab.' + id], lang + ' tab ' + id);
       assert.ok(I18n.STRINGS[lang]['help.' + id + '.title'], lang + ' title ' + id);
