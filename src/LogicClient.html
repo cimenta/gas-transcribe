@@ -2,8 +2,10 @@
 const Logic = {
   HEADER_PREFIX: 'GAS-TRANSCRIBE v1 audioFileId=',
 
-  transcriptFileName(audioName) {
-    return audioName + '.transcript.txt';
+  // Each provider writes its own result next to the audio: <audio>.transcript.<provider>.txt / .json.
+  // Without a provider the name is the legacy one (<audio>.transcript.txt) from before per-provider results.
+  transcriptFileName(audioName, provider) {
+    return audioName + '.transcript.' + (provider ? provider + '.' : '') + 'txt';
   },
 
   buildTranscript(audioFileId, text) {
@@ -17,8 +19,28 @@ const Logic = {
 
   JSON_FORMAT: 'GAS-TRANSCRIBE json v1',
 
-  transcriptJsonName(audioName) {
-    return audioName + '.transcript.json';
+  transcriptJsonName(audioName, provider) {
+    return audioName + '.transcript.' + (provider ? provider + '.' : '') + 'json';
+  },
+
+  // A type the browser can play for the player; empty for an unknown extension.
+  audioMime(fileName) {
+    const ext = /\.([^.]+)$/.exec(fileName || '');
+    switch (ext && ext[1].toLowerCase()) {
+      case 'opus':
+      case 'ogg':
+        return 'audio/ogg';
+      case 'mp3':
+        return 'audio/mpeg';
+      case 'wav':
+        return 'audio/wav';
+      case 'flac':
+        return 'audio/flac';
+      case 'm4a':
+        return 'audio/mp4';
+      default:
+        return '';
+    }
   },
 
   // The provider's whole response (e.g. Groq verbose_json with timed segments) plus the audio file id.

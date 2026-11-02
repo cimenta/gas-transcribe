@@ -48,16 +48,19 @@ function api_removeFolder(id) {
 
 function api_listFiles() {
   return guard_(() => {
+    // Once: results written before 0.2.1 get the provider in their file name (retried while a folder is unreadable).
+    if (Settings_get_('migratedResults') !== '1' && migrateLegacyResults_()) Settings_set_('migratedResults', '1');
     const scan = listAudioFiles_();
+    const provider = getSettings_().provider;
     const props = PropertiesService.getScriptProperties().getProperties();
     const items = scan.items.map((file) => {
-      const transcript = scan.transcripts[file.id];
+      const texts = (scan.transcripts[file.id] || []).map((r) => r.text);
       const raw = props[OP_PREFIX + file.id];
       const op = raw ? JSON.parse(raw) : null;
       let status = 'none';
       let code;
       if (op && op.state === 'running') status = 'running';
-      else if (transcript) status = 'done';
+      else if (DriveLogic.hasResult(file.results, provider)) status = 'done';
       else if (op && op.state === 'error') {
         status = 'error';
         code = op.code;
@@ -69,11 +72,11 @@ function api_listFiles() {
         modified: file.modified,
         modifiedText: formatDate_(file.modified),
         status,
-        hasJson: file.hasJson,
+        results: file.results,
         language: props[FILE_LANG_PREFIX + file.id] || '',
         errorCode: code,
         errorDetail: status === 'error' && op ? op.detail : undefined,
-        transcriptText: transcript ? transcript.text : undefined,
+        transcriptText: texts.length ? texts.join(String.fromCharCode(10)) : undefined,
       };
     });
     const lang = I18n.resolveLang(Settings_get_('uiLang'), '');
@@ -122,10 +125,17 @@ function api_pollOperations() {
   return guard_(() => pollOperations_());
 }
 
-function api_getTranscript(fileId) {
+// A provider id from the browser: '' (a result from before per-provider files) or one of the known providers.
+function providerArg_(provider) {
+  const value = String(provider === undefined || provider === null ? '' : provider);
+  if (value !== '' && !Providers.list().some((p) => p.id === value)) throw new Error('invalid provider');
+  return value;
+}
+
+function api_getTranscript(fileId, provider) {
   return guard_(() => {
     if (!isUnderConnectedFolder_(String(fileId))) throw new Error('Forbidden');
-    const transcript = findTranscriptFile_(DriveApp.getFileById(String(fileId)));
+    const transcript = findResultFile_(DriveApp.getFileById(String(fileId)), 'txt', providerArg_(provider));
     if (!transcript) return '';
     const parsed = Logic.parseTranscript(transcript.getBlob().getDataAsString());
     return parsed ? parsed.text : '';
@@ -133,17 +143,33 @@ function api_getTranscript(fileId) {
 }
 
 // The saved JSON result (provider response with timed segments), as stored on the Drive.
-function api_getTranscriptJson(fileId) {
+function api_getTranscriptJson(fileId, provider) {
   return guard_(() => {
     if (!isUnderConnectedFolder_(String(fileId))) throw new Error('Forbidden');
-    const jsonFile = findJsonFile_(DriveApp.getFileById(String(fileId)));
+    const jsonFile = findResultFile_(DriveApp.getFileById(String(fileId)), 'json', providerArg_(provider));
     return jsonFile ? jsonFile.getBlob().getDataAsString() : '';
+  });
+}
+
+// The recording itself for the in-page player (base64, so only small files); a larger one is opened in Drive.
+const MAX_PLAY_BYTES = 10 * 1024 * 1024;
+
+function api_getAudio(fileId) {
+  return guard_(() => {
+    if (!isUnderConnectedFolder_(String(fileId))) throw new Error('Forbidden');
+    const file = DriveApp.getFileById(String(fileId));
+    if (file.getSize() > MAX_PLAY_BYTES) return { tooLarge: true, url: file.getUrl() };
+    return {
+      mime: Logic.audioMime(file.getName()) || file.getMimeType(),
+      data: Utilities.base64Encode(file.getBlob().getBytes()),
+      url: file.getUrl(),
+    };
   });
 }
 
 function api_deleteFile(fileId) {
   return guard_(() => {
-    trashFileAndTranscript_(String(fileId));
+    trashFileAndResults_(String(fileId));
     discardOperation_(String(fileId));
     setFileLanguage_(String(fileId), '');
     return true;

@@ -185,3 +185,20 @@ test('groupByFolder splits folder paths and keeps item order', () => {
   assert.deepStrictEqual(groups.map((g) => g.folderPath), ['/A', '/A/B']);
   assert.deepStrictEqual(groups[1].items.map((i) => i.id), ['1', '3']);
 });
+
+test('result file names carry the provider id, legacy names have none', () => {
+  assert.strictEqual(Logic.transcriptFileName('a.opus', 'groq'), 'a.opus.transcript.groq.txt');
+  assert.strictEqual(Logic.transcriptJsonName('a.opus', 'google-speech'), 'a.opus.transcript.google-speech.json');
+  assert.strictEqual(Logic.transcriptFileName('a.opus', ''), 'a.opus.transcript.txt');
+  assert.strictEqual(Logic.transcriptJsonName('a.opus'), 'a.opus.transcript.json');
+});
+
+test('audioMime maps the extension to a type the browser can play', () => {
+  assert.strictEqual(Logic.audioMime('call.OPUS'), 'audio/ogg');
+  assert.strictEqual(Logic.audioMime('a.ogg'), 'audio/ogg');
+  assert.strictEqual(Logic.audioMime('a.mp3'), 'audio/mpeg');
+  assert.strictEqual(Logic.audioMime('a.wav'), 'audio/wav');
+  assert.strictEqual(Logic.audioMime('a.flac'), 'audio/flac');
+  assert.strictEqual(Logic.audioMime('a.m4a'), 'audio/mp4');
+  assert.strictEqual(Logic.audioMime('a.xyz'), '');
+});

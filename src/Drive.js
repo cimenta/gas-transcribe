@@ -7,12 +7,54 @@ const DriveLogic = {
     return Boolean(ext) && DriveLogic.AUDIO_EXTENSIONS.indexOf(ext[1].toLowerCase()) !== -1;
   },
 
+  // <audio>.transcript.<provider>.txt|json; the provider part is missing in the legacy names.
+  resultInfo(fileName) {
+    const match = /\.transcript(?:\.([a-z][a-z0-9-]*))?\.(txt|json)$/.exec(fileName || '');
+    return match ? { kind: match[2], provider: match[1] || '' } : null;
+  },
+
   isTranscriptName(fileName) {
-    return /\.transcript\.txt$/.test(fileName || '');
+    const info = DriveLogic.resultInfo(fileName);
+    return Boolean(info) && info.kind === 'txt';
   },
 
   isTranscriptJsonName(fileName) {
-    return /\.transcript\.json$/.test(fileName || '');
+    const info = DriveLogic.resultInfo(fileName);
+    return Boolean(info) && info.kind === 'json';
+  },
+
+  // [{provider, hasJson}] for the providers that have a result for this audio file, sorted by provider id.
+  resultsFor(audioName, folderId, entries, jsonNames) {
+    const naming = typeof Logic !== 'undefined' ? Logic : require('./Logic.js');
+    return (entries || [])
+      .map((e) => ({ provider: e.provider, hasJson: Boolean(jsonNames[folderId + '/' + naming.transcriptJsonName(audioName, e.provider)]) }))
+      .sort((a, b) => a.provider.localeCompare(b.provider));
+  },
+
+  // Renames for results written before they were stored per provider (<audio>.transcript.txt / .json).
+  // A legacy text takes the provider recorded in the legacy JSON of the same audio file; without a JSON it can
+  // only have come from Google Speech, the one provider that does not write one. `taken` is a set of
+  // "<folderId>/<name>" for the names already in use, so nothing is overwritten.
+  planMigration(entries, taken) {
+    const jsonProvider = {};
+    entries.forEach((e) => { if (e.kind === 'json' && e.provider) jsonProvider[e.folderId + '/' + e.audioFileId] = e.provider; });
+    const used = Object.assign({}, taken);
+    const renames = [];
+    entries.forEach((e) => {
+      const info = DriveLogic.resultInfo(e.name);
+      if (!info || info.provider !== '') return;
+      const provider = jsonProvider[e.folderId + '/' + e.audioFileId] || (e.kind === 'json' ? e.provider : 'google-speech');
+      if (!provider) return;
+      const newName = e.name.replace(/\.transcript\.(txt|json)$/, '.transcript.' + provider + '.$1');
+      if (used[e.folderId + '/' + newName]) return;
+      used[e.folderId + '/' + newName] = true;
+      renames.push({ id: e.id, newName });
+    });
+    return renames;
+  },
+
+  hasResult(results, provider) {
+    return (results || []).some((r) => r.provider === provider);
   },
 
   dedupeById(items) {
@@ -24,6 +66,63 @@ const DriveLogic = {
     });
   },
 };
+
+// One-time move of legacy result files to the per-provider names. Returns false when a folder could not be
+// read, so the caller can try again later instead of marking the migration as done.
+function migrateLegacyResults_() {
+  const entries = [];
+  const taken = {};
+  const visited = {};
+  const handles = {};
+  let complete = true;
+
+  function walk(folder) {
+    const folderId = folder.getId();
+    if (visited[folderId]) return;
+    visited[folderId] = true;
+    const files = folder.getFiles();
+    while (files.hasNext()) {
+      try {
+        const file = files.next();
+        if (file.isTrashed()) continue;
+        taken[folderId + '/' + file.getName()] = true;
+        const info = DriveLogic.resultInfo(file.getName());
+        if (!info || info.provider !== '') continue;
+        const content = file.getBlob().getDataAsString();
+        const parsed = info.kind === 'txt' ? Logic.parseTranscript(content) : Logic.parseTranscriptJson(content);
+        if (!parsed) continue;
+        handles[file.getId()] = file;
+        entries.push({ id: file.getId(), folderId, name: file.getName(), kind: info.kind, audioFileId: parsed.audioFileId, provider: parsed.provider });
+      } catch (e) {
+        complete = false;
+        console.log('migration skipped a file: ' + errorDetail_(e));
+      }
+    }
+    const subfolders = folder.getFolders();
+    while (subfolders.hasNext()) {
+      const sub = subfolders.next();
+      if (!sub.isTrashed()) walk(sub);
+    }
+  }
+
+  getFolderIds_().forEach((folderId) => {
+    try {
+      walk(DriveApp.getFolderById(folderId));
+    } catch (e) {
+      complete = false;
+      console.log('migration folder failed: ' + errorDetail_(e));
+    }
+  });
+  DriveLogic.planMigration(entries, taken).forEach((rename) => {
+    try {
+      handles[rename.id].setName(rename.newName);
+    } catch (e) {
+      complete = false;
+      console.log('migration rename failed: ' + errorDetail_(e));
+    }
+  });
+  return complete;
+}
 
 const MAX_CACHED_TEXT = 90000;
 
@@ -49,7 +148,7 @@ function errorDetail_(e) {
 
 // Walks every connected folder and its subfolders. A folder that cannot be read is
 // reported in `errors` and does not stop the others. `transcripts` maps audioFileId ->
-// {fileId, text} for every transcript file found.
+// [{provider, fileId, text}], one entry per provider that has a transcript file.
 function listAudioFiles_() {
   const items = [];
   const errors = [];
@@ -69,7 +168,10 @@ function listAudioFiles_() {
         if (file.isTrashed()) continue;
         if (DriveLogic.isTranscriptName(file.getName())) {
           const parsed = Logic.parseTranscript(readTranscriptCached_(file));
-          if (parsed) transcripts[parsed.audioFileId] = { fileId: file.getId(), text: parsed.text };
+          if (parsed) {
+            if (!transcripts[parsed.audioFileId]) transcripts[parsed.audioFileId] = [];
+            transcripts[parsed.audioFileId].push({ provider: DriveLogic.resultInfo(file.getName()).provider, fileId: file.getId(), text: parsed.text });
+          }
         } else if (DriveLogic.isTranscriptJsonName(file.getName())) {
           jsonNames[id + '/' + file.getName()] = true;
         } else if (DriveLogic.isAudio(file.getMimeType(), file.getName())) {
@@ -107,7 +209,7 @@ function listAudioFiles_() {
 
   const unique = DriveLogic.dedupeById(items);
   unique.forEach((item) => {
-    item.hasJson = Boolean(jsonNames[item.folderId + '/' + Logic.transcriptJsonName(item.name)]);
+    item.results = DriveLogic.resultsFor(item.name, item.folderId, transcripts[item.id], jsonNames);
   });
   return { items: unique, errors, transcripts };
 }
@@ -141,27 +243,30 @@ function isUnderConnectedFolder_(fileId) {
   return false;
 }
 
-// Map of audioFileId -> transcript File for all transcripts stored directly in the folder.
-function listTranscriptsInFolder_(folder) {
-  const found = {};
+// Every result file (text or JSON, any provider) of an audio file. The audio file id inside the file decides
+// the match, not the name. `only` ({kind, provider}) skips the files that are not wanted before they are read.
+function findResultFiles_(audioFile, only) {
+  const found = [];
   // Iterates the folder instead of using Drive search, whose title matching and index lag are unreliable.
-  const files = folder.getFiles();
-  while (files.hasNext()) {
-    const file = files.next();
-    if (file.isTrashed() || !DriveLogic.isTranscriptName(file.getName())) continue;
-    const parsed = Logic.parseTranscript(file.getBlob().getDataAsString());
-    if (parsed) found[parsed.audioFileId] = file;
+  const parents = audioFile.getParents();
+  while (parents.hasNext()) {
+    const files = parents.next().getFiles();
+    while (files.hasNext()) {
+      const file = files.next();
+      if (file.isTrashed()) continue;
+      const info = DriveLogic.resultInfo(file.getName());
+      if (!info || (only && (info.kind !== only.kind || info.provider !== only.provider))) continue;
+      const content = file.getBlob().getDataAsString();
+      const parsed = info.kind === 'txt' ? Logic.parseTranscript(content) : Logic.parseTranscriptJson(content);
+      if (parsed && parsed.audioFileId === audioFile.getId()) found.push({ file, kind: info.kind, provider: info.provider });
+    }
   }
   return found;
 }
 
-function findTranscriptFile_(audioFile) {
-  const parents = audioFile.getParents();
-  while (parents.hasNext()) {
-    const match = listTranscriptsInFolder_(parents.next())[audioFile.getId()];
-    if (match) return match;
-  }
-  return null;
+function findResultFile_(audioFile, kind, provider) {
+  const found = findResultFiles_(audioFile, { kind, provider });
+  return found.length ? found[0].file : null;
 }
 
 const DURATION_CHUNK = 65536;
@@ -202,29 +307,10 @@ function estimateDuration_(fileId) {
   return estimate;
 }
 
-// The saved JSON result of a recording: iterates the folder (no Drive search) and checks the audio file id inside.
-function findJsonFile_(audioFile) {
-  const name = Logic.transcriptJsonName(audioFile.getName());
-  const parents = audioFile.getParents();
-  while (parents.hasNext()) {
-    const files = parents.next().getFiles();
-    while (files.hasNext()) {
-      const file = files.next();
-      if (file.isTrashed() || file.getName() !== name) continue;
-      const parsed = Logic.parseTranscriptJson(file.getBlob().getDataAsString());
-      if (parsed && parsed.audioFileId === audioFile.getId()) return file;
-    }
-  }
-  return null;
-}
-
-function trashFileAndTranscript_(fileId) {
+function trashFileAndResults_(fileId) {
   if (!isUnderConnectedFolder_(fileId)) throw new Error('Forbidden');
   const file = DriveApp.getFileById(fileId);
-  const transcript = findTranscriptFile_(file);
-  if (transcript) transcript.setTrashed(true);
-  const jsonFile = findJsonFile_(file);
-  if (jsonFile) jsonFile.setTrashed(true);
+  findResultFiles_(file).forEach((result) => result.file.setTrashed(true));
   file.setTrashed(true);
 }
 

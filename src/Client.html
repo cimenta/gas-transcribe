@@ -103,7 +103,7 @@
 
   // Text popup with search: hits are highlighted, Enter / Shift+Enter or the arrows jump between them.
   // `raw`, when given, adds a button that switches between the formatted text and the raw content.
-  function textDialog(text, raw) {
+  function textDialog(text, raw, title) {
     return dialog((close) => {
       let shown = text;
       let query = '';
@@ -152,6 +152,7 @@
       });
       paint();
       return el('div', {}, [
+        title ? el('h3', { text: title }) : null,
         el('div', { class: 'row search' }, [
           search,
           el('button', { class: 'btn', text: '▲', title: t('search.prev'), onclick: () => step(-1) }),
@@ -252,15 +253,45 @@
     await loadFiles();
   }
 
-  async function viewText(item) {
-    try { await textDialog(await call('api_getTranscript', item.id)); } catch (e) { showError(e); }
+  // A provider's display name; '' is a result written before results were stored per provider.
+  function providerName(id) {
+    if (!id) return t('result.legacy');
+    const p = state.providers.find((x) => x.id === id);
+    return p ? p.name : id;
   }
 
-  async function viewJson(item) {
+  async function viewText(item, provider) {
     try {
-      const rawJson = await call('api_getTranscriptJson', item.id);
-      await textDialog(Logic.formatTranscriptJson(rawJson), rawJson);
+      await textDialog(await call('api_getTranscript', item.id, provider), undefined, item.name + ' · ' + providerName(provider));
     } catch (e) { showError(e); }
+  }
+
+  async function viewJson(item, provider) {
+    try {
+      const rawJson = await call('api_getTranscriptJson', item.id, provider);
+      await textDialog(Logic.formatTranscriptJson(rawJson), rawJson, item.name + ' · ' + providerName(provider));
+    } catch (e) { showError(e); }
+  }
+
+  // Plays the recording in a popup. The bytes come through the server as base64, so only small files;
+  // for a larger one the popup offers the Drive page instead.
+  async function playItem(item) {
+    let audio;
+    try { audio = await call('api_getAudio', item.id); } catch (e) { showError(e); return; }
+    let objectUrl = null;
+    const body = [el('h3', { text: item.name })];
+    if (audio.tooLarge) {
+      body.push(el('p', { text: t('play.tooLarge') }));
+    } else {
+      const bytes = Uint8Array.from(atob(audio.data), (c) => c.charCodeAt(0));
+      objectUrl = URL.createObjectURL(new Blob([bytes], { type: audio.mime }));
+      body.push(el('audio', { controls: 'controls', autoplay: 'autoplay', src: objectUrl, style: 'width:100%' }));
+    }
+    body.push(el('p', { class: 'meta' }, [el('a', { href: audio.url, target: '_blank', rel: 'noopener noreferrer', text: t('play.openDrive') })]));
+    await dialog((close) => el('div', {}, body.concat([
+      el('div', { class: 'row' }, [el('button', { class: 'btn primary', text: t('action.close'), onclick: () => close() })]),
+    ])));
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
   }
 
   async function deleteItem(item) {
@@ -325,6 +356,7 @@
     hide.addEventListener('change', () => { state.hide = hide.checked; renderList(); });
     return el('div', { class: 'row toolbar' }, [
       search,
+      el('button', { class: 'btn', text: '⟳ ' + t('toolbar.refresh'), title: t('toolbar.refreshHint'), onclick: () => loadFiles() }),
       el('label', {}, [document.createTextNode(t('toolbar.sortLabel') + ': '), sort]),
       el('label', {}, [hide, document.createTextNode(' ' + t('toolbar.hideTranscribed'))]),
     ]);
@@ -332,9 +364,8 @@
 
   function renderItem(item) {
     const actions = [];
+    actions.push(el('button', { class: 'btn', text: '▶ ' + t('action.play'), onclick: () => playItem(item) }));
     if (item.status === 'done') {
-      actions.push(el('button', { class: 'btn', text: t('action.view'), onclick: () => viewText(item) }));
-      if (item.hasJson) actions.push(el('button', { class: 'btn', text: t('action.viewJson'), onclick: () => viewJson(item) }));
       actions.push(el('button', { class: 'btn', text: t('action.retranscribe'), onclick: () => transcribe(item) }));
     } else if (item.status !== 'running') {
       actions.push(el('button', { class: 'btn primary', text: t('action.transcribe'), onclick: () => transcribe(item) }));
@@ -354,6 +385,14 @@
     });
     actions.unshift(el('label', { class: 'lang' }, [document.createTextNode(t('file.language') + ' '), language]));
     const length = state.durations[item.id];
+    // One line per provider that has a result, the active provider first.
+    const active = state.settings.provider;
+    const results = (item.results || []).slice().sort((a, b) => (b.provider === active) - (a.provider === active));
+    const resultRows = results.map((r) => el('div', { class: 'result' }, [
+      el('span', { class: 'who', text: providerName(r.provider) + (r.provider === active ? ' ●' : '') }),
+      el('button', { class: 'btn', text: t('action.view'), onclick: () => viewText(item, r.provider) }),
+      r.hasJson ? el('button', { class: 'btn', text: t('action.viewJson'), onclick: () => viewJson(item, r.provider) }) : null,
+    ]));
     return el('div', { class: 'file' }, [
       el('div', { class: 'name', text: '🎵 ' + item.name }),
       el('div', { class: 'meta' }, [
@@ -363,6 +402,7 @@
         el('span', { class: 'status-' + item.status, text: statusText(item) }),
       ]),
       el('div', { class: 'actions' }, actions),
+      resultRows.length ? el('div', { class: 'results' }, resultRows) : null,
     ]);
   }
 

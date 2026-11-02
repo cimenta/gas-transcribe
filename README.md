@@ -11,7 +11,12 @@ from an admin console. Three providers are built in and switchable in Settings:
 - **Deepgram** (synchronous, nova-3 / nova-2, API key stored server-side only, `mip_opt_out` sent with every
   request; timed utterances are saved as `<name>.transcript.json`).
 
-Other features: per-file language override, audio length estimates, searchable text/JSON viewers,
+Every provider keeps its own result next to the audio (`<audio>.transcript.<provider>.txt`, and `.json` where the
+provider returns one), so the outputs can be compared; transcribing again with the same provider asks before it
+overwrites that provider's result only. Results written by 0.2.0 and older (`<audio>.transcript.txt`) are listed
+as "older transcript".
+
+Other features: refresh button, in-page audio player (files up to 10 MB, larger ones open in Drive), per-file language override, audio length estimates, searchable text/JSON viewers,
 persistent error popups with details, and an app version shown in the console.
 
 The interface and the built-in Help (step-by-step setup, including the Cloud project and bucket) are

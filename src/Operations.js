@@ -43,9 +43,10 @@ function startTranscription_(fileId, overwrite) {
     if (OperationsLogic.nextAction(existing) === 'reuse') return { state: 'running' };
 
     const file = DriveApp.getFileById(fileId);
-    if (findTranscriptFile_(file) && !overwrite) return { state: 'error', code: 'transcriptExists' };
-
     const settings = getSettings_();
+    // Only this provider's own result counts; results of other providers are kept side by side.
+    if (findResultFile_(file, 'txt', settings.provider) && !overwrite) return { state: 'error', code: 'transcriptExists' };
+
     const fileLanguage = Settings_get_(FILE_LANG_PREFIX + fileId);
     if (fileLanguage) settings.speechLanguage = fileLanguage;
     const provider = Providers.get(settings.provider);
@@ -77,13 +78,13 @@ function saveTranscriptJson_(fileId, started, provider) {
   try {
     const file = DriveApp.getFileById(fileId);
     const content = Logic.buildTranscriptJson(fileId, provider, started.model, started.json, new Date().toISOString());
-    const existing = findJsonFile_(file);
+    const existing = findResultFile_(file, 'json', provider);
     if (existing) {
       existing.setContent(content);
       return;
     }
     const parents = file.getParents();
-    if (parents.hasNext()) parents.next().createFile(Logic.transcriptJsonName(file.getName()), content, 'application/json');
+    if (parents.hasNext()) parents.next().createFile(Logic.transcriptJsonName(file.getName(), provider), content, 'application/json');
   } catch (e) {
     console.log('json save failed: ' + errorCode_(e));
   }
@@ -97,7 +98,7 @@ function finishSynchronous_(fileId, base, started) {
   };
   if (!text) return fail('noSpeech');
   try {
-    saveTranscript_(fileId, text);
+    saveTranscript_(fileId, text, base.provider);
   } catch (e) {
     return fail('transcriptWrite');
   }
@@ -106,17 +107,17 @@ function finishSynchronous_(fileId, base, started) {
   return { state: 'done' };
 }
 
-function saveTranscript_(fileId, text) {
+function saveTranscript_(fileId, text, provider) {
   const file = DriveApp.getFileById(fileId);
   const content = Logic.buildTranscript(fileId, text);
-  const existing = findTranscriptFile_(file);
+  const existing = findResultFile_(file, 'txt', provider);
   if (existing) {
     existing.setContent(content);
     return;
   }
   const parents = file.getParents();
   if (!parents.hasNext()) throw new Error('no parent');
-  parents.next().createFile(Logic.transcriptFileName(file.getName()), content, MimeType.PLAIN_TEXT);
+  parents.next().createFile(Logic.transcriptFileName(file.getName(), provider), content, MimeType.PLAIN_TEXT);
 }
 
 // Deletes the provider's temporary copy. A failure is logged (code only) and never stops the run;
@@ -152,7 +153,7 @@ function finishOp_(op, provider, settings, result) {
     if (!isUnderConnectedFolder_(op.fileId)) code = 'forbidden';
     else {
       try {
-        saveTranscript_(op.fileId, result.text);
+        saveTranscript_(op.fileId, result.text, op.provider);
       } catch (e) {
         code = 'transcriptWrite';
       }
