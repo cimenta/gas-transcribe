@@ -9,7 +9,8 @@ function guard_(fn) {
     const code = e.message === 'Forbidden' ? 'forbidden' : (e.code || 'generic');
     console.log('api error: ' + code);
     const lang = I18n.resolveLang(Settings_get_('uiLang'), '');
-    return { error: { code, message: I18n.t(lang, 'error.' + code) } };
+    const detail = e.detail ? ' (' + e.detail + ')' : '';
+    return { error: { code, message: I18n.t(lang, 'error.' + code) + detail } };
   }
 }
 
@@ -115,6 +116,15 @@ function api_setFileLanguage(fileId, language) {
     setFileLanguage_(String(fileId), parsed.value);
     return parsed.value;
   });
+}
+
+// Upload of a recording into a connected folder: start opens the session, chunk sends 2 MiB at a time.
+function api_uploadStart(folderId, fileName, size) {
+  return guard_(() => uploadStart_(folderId, fileName, size));
+}
+
+function api_uploadChunk(uploadId, offset, base64) {
+  return guard_(() => uploadChunk_(uploadId, offset, base64));
 }
 
 function api_transcribe(fileId, overwrite) {

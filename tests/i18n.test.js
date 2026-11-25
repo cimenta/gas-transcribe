@@ -30,7 +30,7 @@ test('resolveLang prefers saved value, then browser language', () => {
 
 test('every operation error code has a translation', () => {
   ['noSpeech', 'unsupportedFormat', 'noBucket', 'bucketWrite', 'generic', 'transcriptExists', 'transcriptWrite',
-    'noKey', 'invalidKey', 'tooLarge', 'rateLimit', 'badLanguage', 'noCredit']
+    'noKey', 'invalidKey', 'tooLarge', 'rateLimit', 'badLanguage', 'noCredit', 'uploadTooLarge']
     .forEach((code) => assert.ok(('error.' + code) in I18n.STRINGS.cs, code));
 });
 

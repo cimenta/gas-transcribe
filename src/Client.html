@@ -273,6 +273,71 @@
     } catch (e) { showError(e); }
   }
 
+  function toBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+      reader.onerror = () => reject({ code: 'generic', message: t('error.generic') });
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  // Sends the file to the server in chunks (the server forwards them to a Drive resumable upload).
+  async function uploadFile(folderId, file, onProgress) {
+    const started = await call('api_uploadStart', folderId, file.name, file.size);
+    let offset = 0;
+    while (offset < file.size) {
+      const end = Math.min(offset + started.chunkSize, file.size);
+      const result = await call('api_uploadChunk', started.uploadId, offset, await toBase64(file.slice(offset, end)));
+      offset = end;
+      onProgress(offset);
+      if (result.done) return result;
+    }
+    throw { code: 'generic', message: t('error.generic') };
+  }
+
+  async function uploadDialog() {
+    if (!state.folders.length) { showError({ message: t('upload.noFolder') }); return; }
+    let uploaded = false;
+    await dialog((close) => {
+      const mb = (bytes) => (bytes / 1048576).toLocaleString(state.lang, { maximumFractionDigits: 1 });
+      const folder = el('select', {}, state.folders.map((f) => el('option', { value: f.id, text: f.name })));
+      const input = el('input', { type: 'file', accept: 'audio/*,.opus,.ogg,.mp3,.flac,.wav,.m4a' });
+      const fill = el('div', { class: 'fill', style: 'width:0%' });
+      const info = el('div', { class: 'meta' });
+      const start = el('button', { class: 'btn primary', text: t('upload.start') });
+      const closeButton = el('button', { class: 'btn', text: t('action.close'), onclick: () => close() });
+      start.addEventListener('click', async () => {
+        const file = input.files && input.files[0];
+        if (!file) return;
+        start.disabled = true;
+        closeButton.disabled = true;
+        info.textContent = '';
+        try {
+          const result = await uploadFile(folder.value, file, (done) => {
+            fill.style.width = Math.round((done / file.size) * 100) + '%';
+            info.textContent = t('upload.progress', { done: mb(done), total: mb(file.size) });
+          });
+          uploaded = true;
+          info.textContent = t('upload.done', { name: result.name });
+        } catch (e) {
+          showError(e);
+        }
+        start.disabled = false;
+        closeButton.disabled = false;
+      });
+      return el('div', { class: 'upload' }, [
+        el('h3', { text: t('upload.title') }),
+        el('label', { class: 'field' }, [el('span', { text: t('upload.folder') }), folder]),
+        el('label', { class: 'field' }, [el('span', { text: t('upload.file') }), input]),
+        el('div', { class: 'bar' }, [fill]),
+        info,
+        el('div', { class: 'row' }, [start, closeButton]),
+      ]);
+    });
+    if (uploaded) await loadFiles();
+  }
+
   // Plays the recording in a popup. The bytes come through the server as base64, so only small files;
   // for a larger one the popup offers the Drive page instead.
   async function playItem(item) {
@@ -356,6 +421,7 @@
     hide.addEventListener('change', () => { state.hide = hide.checked; renderList(); });
     return el('div', { class: 'row toolbar' }, [
       search,
+      el('button', { class: 'btn', text: '⬆ ' + t('action.upload'), onclick: () => uploadDialog() }),
       el('button', { class: 'btn', text: '⟳ ' + t('toolbar.refresh'), title: t('toolbar.refreshHint'), onclick: () => loadFiles() }),
       el('label', {}, [document.createTextNode(t('toolbar.sortLabel') + ': '), sort]),
       el('label', {}, [hide, document.createTextNode(' ' + t('toolbar.hideTranscribed'))]),

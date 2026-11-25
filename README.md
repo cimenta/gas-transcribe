@@ -16,7 +16,8 @@ provider returns one), so the outputs can be compared; transcribing again with t
 overwrites that provider's result only. Results written by 0.2.0 and older (`<audio>.transcript.txt`) are listed
 as "older transcript".
 
-Other features: refresh button, in-page audio player (files up to 10 MB, larger ones open in Drive), per-file language override, audio length estimates, searchable text/JSON viewers,
+Other features: upload of an audio file from the browser into a connected folder (up to 100 MB, sent in chunks
+to a Drive resumable upload), refresh button, in-page audio player (files up to 10 MB, larger ones open in Drive), per-file language override, audio length estimates, searchable text/JSON viewers,
 persistent error popups with details, and an app version shown in the console.
 
 The interface and the built-in Help (step-by-step setup, including the Cloud project and bucket) are
